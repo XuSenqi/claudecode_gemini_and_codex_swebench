@@ -294,9 +294,11 @@ claudecode_n_codex_swebench/
 │   ├── chain_of_thought_prompt.txt
 │   └── react_style_prompt.txt
 │
-├── predictions/              # Generated predictions (JSONL)
-├── results/                  # Detailed Claude outputs
-├── evaluation_results/       # Docker evaluation results
+├── runs/                     # Per-run artifacts (predictions, session/stream, evaluation/)
+│   └── <run-dir>/            # via -o, or auto: <backend>-<dataset>-<timestamp>
+│       ├── predictions.jsonl
+│       ├── <instance_id>/    # session/stream JSONs
+│       └── evaluation/       # eval reports + harness logs
 └── backup/                   # Archived/unused files
 ```
 
@@ -358,9 +360,7 @@ python swe_bench.py run --quick --max-workers 1
 ### Log Files
 
 - **benchmark_scores.log**: Main results log (JSON lines)
-- **predictions/**: All generated patches
-- **evaluation_results/**: Detailed Docker test results
-- **results/**: Raw Claude Code outputs for debugging
+- **runs/**: Per-run output — predictions, per-instance session/stream, and `evaluation/` (reports + harness logs)
 
 ## Docker Setup
 

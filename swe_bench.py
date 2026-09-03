@@ -7,7 +7,10 @@ Combines all benchmark, evaluation, and scoring functionality
 import argparse
 import sys
 import os
+from datetime import datetime
 from pathlib import Path
+
+import jsonlines
 
 # Import the existing functionality
 sys.path.insert(0, str(Path(__file__).parent))
@@ -62,6 +65,16 @@ def run_command(args):
     print("="*60)
     print(f"Dataset: {args.dataset}")
     print(f"Instances: {args.limit}")
+    workers = getattr(args, "workers", 1) or 1
+    output_dir = getattr(args, "output_dir", None)
+    if not output_dir:
+        ds_tag = args.dataset.split("/")[-1].replace("_", "-").lower()
+        output_dir = f"runs/{runner.backend}-{ds_tag}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        print(f"Auto output directory: {output_dir}")
+    if workers > 1:
+        print(f"Generation workers: {workers}")
+    if output_dir:
+        print(f"Output directory: {output_dir}")
     if hasattr(args, 'model') and args.model:
         model_name = get_model_name(args.model, runner.backend) if args.model else None
         print(f"Model: {args.model} -> {model_name}")
@@ -72,7 +85,9 @@ def run_command(args):
     # Run inference
     print(f"\nPhase 1: Generating patches with {runner.backend.title()} Code...")
     start_time = time.time()
-    prediction_file, generation_time = runner.run_inference(args.dataset, args.limit)
+    prediction_file, generation_time = runner.run_inference(
+        args.dataset, args.limit, workers, output_dir=output_dir,
+    )
     
     if not prediction_file:
         print("❌ Failed to generate predictions")
@@ -150,8 +165,9 @@ def eval_command(args):
     # Get all prediction files
     all_files = evaluator.get_prediction_files()
     
-    if not all_files:
+    if not all_files and not args.file:
         print("No prediction files found in predictions/")
+        print("Tip: pass a specific file with --file (e.g. runs/<run-dir>/predictions.jsonl)")
         return 1
     
     # Filter based on selection mode
@@ -168,6 +184,16 @@ def eval_command(args):
                 if f == file_path or f.name == args.file:
                     selected_files = [(f, t, c)]
                     break
+            # File exists but lives outside predictions/ (e.g. runs/<dir>/predictions.jsonl)
+            if not selected_files:
+                count = 0
+                try:
+                    with jsonlines.open(file_path) as reader:
+                        count = sum(1 for _ in reader)
+                except Exception:
+                    count = 0
+                ts = datetime.fromtimestamp(file_path.stat().st_mtime)
+                selected_files = [(file_path.resolve(), ts, count)]
         
         if not selected_files:
             print(f"File not found: {args.file}")
@@ -372,6 +398,10 @@ Examples:
     run_parser.add_argument('--full', action='store_true', help='Full test (300 instances)')
     run_parser.add_argument('--no-eval', action='store_true', help='Skip Docker evaluation')
     run_parser.add_argument('--dataset', default='princeton-nlp/SWE-bench_Lite', help='Dataset to use')
+    run_parser.add_argument('--workers', type=int, default=1,
+                            help='Parallel Codex/Claude workers for patch generation (default: 1)')
+    run_parser.add_argument('-o', '--output-dir', type=str,
+                            help='Directory for run outputs and per-instance artifacts')
     run_parser.add_argument('--max-workers', type=int, default=2, help='Max parallel Docker containers')
     run_parser.add_argument('--notes', default='', help='Optional notes about this run')
     run_parser.add_argument('--model', type=str, help='Model to use (e.g., opus-4.1, codex-4.2)')

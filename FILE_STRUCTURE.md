@@ -32,21 +32,16 @@ claudecode_swe_bench/
 │   ├── [SWE-bench source files]
 │   └── ...
 │
-├── predictions/                 # KEEP - Your generated patches
-│   ├── predictions_*.jsonl     # Your test results
+├── runs/                        # KEEP - Per-run output (generation + evaluation)
+│   ├── <run-dir>/              # named via -o, or auto: <backend>-<dataset>-<ts>
+│   │   ├── predictions.jsonl   # generated patches
+│   │   ├── <instance_id>/      # per-instance session/stream
+│   │   │   ├── <instance_id>.session.json
+│   │   │   └── <instance_id>.stream.json
+│   │   └── evaluation/         # eval reports + harness logs for this run
+│   │       ├── <model>.<run_id>.json
+│   │       └── logs/run_evaluation/<run_id>/
 │   └── ...
-│
-├── results/                     # KEEP - Claude outputs for debugging
-│   ├── instance_*.json
-│   └── ...
-│
-├── evaluation_results/          # KEEP - Docker evaluation results
-│   ├── [timestamp]/
-│   └── ...
-│
-└── logs/                        # KEEP - Runtime logs
-    └── run_evaluation/
-        └── [evaluation logs]
 ```
 
 
@@ -67,10 +62,7 @@ __pycache__/                    # Python cache - regenerates automatically
 - `README.md`, `requirements.txt`
 
 ### Should Keep (Your Data):
-- `predictions/` - Your test results
-- `evaluation_results/` - Docker test results  
-- `logs/` - Debugging information
-- `results/` - Claude outputs
+- `runs/` - Per-run output (generation + evaluation, all colocated)
 - `benchmark_scores.log` - Score history
 - `prompts/` - Prompt templates
 
@@ -88,4 +80,4 @@ If starting fresh, you only need:
 4. `README.md` and `requirements.txt`
 5. Install SWE-bench: `pip install swebench`
 
-Everything else (predictions, results, logs) will be created as you run tests.
+Everything else (runs/) will be created as you run tests.

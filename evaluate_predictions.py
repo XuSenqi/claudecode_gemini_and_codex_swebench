@@ -22,8 +22,19 @@ class PredictionEvaluator:
         self.base_dir = Path.cwd()
         self.predictions_dir = self.base_dir / "predictions"
         self.log_file = self.base_dir / "benchmark_scores.log"
-        self.eval_results_dir = self.base_dir / "evaluation_results"
-        self.eval_results_dir.mkdir(exist_ok=True)
+
+    def eval_output_dir_for(self, prediction_file: Path) -> Path:
+        """Evaluation artifacts directory for a prediction file.
+
+        Predictions under runs/<dir>/ keep their eval artifacts inside that run
+        directory (runs/<dir>/evaluation/). Predictions outside runs/ are also
+        colocated: their eval artifacts land next to the prediction file.
+        """
+        pred_path = Path(prediction_file).resolve()
+        target = pred_path.parent / "evaluation"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
         
     def get_prediction_files(self) -> List[Tuple[Path, datetime, int]]:
         """Get all prediction files with metadata"""
@@ -170,6 +181,7 @@ class PredictionEvaluator:
                     return None, 0
         
         # Prepare for evaluation
+        prediction_file = Path(prediction_file).resolve()
         eval_file = str(prediction_file).replace('.jsonl', '_eval.jsonl')
         
         # Convert to evaluation format
@@ -193,7 +205,8 @@ class PredictionEvaluator:
         # Run evaluation
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"eval_{timestamp}"
-        
+        eval_out_dir = self.eval_output_dir_for(prediction_file)
+
         cmd = [
             sys.executable, "-m", "swebench.harness.run_evaluation",
             "--predictions_path", eval_file,
@@ -202,8 +215,7 @@ class PredictionEvaluator:
             "--run_id", run_id,
             "--max_workers", str(max_workers),
             "--timeout", "600",
-            "--cache_level", "env",
-            "--report_dir", str(self.eval_results_dir),
+            "--report_dir", str(eval_out_dir),
         ]
         
         print(f"\n🔬 Running Docker evaluation...")
@@ -217,7 +229,7 @@ class PredictionEvaluator:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=str(self.eval_results_dir),
+                cwd=str(eval_out_dir),
             )
             
             output_lines = []
@@ -228,14 +240,18 @@ class PredictionEvaluator:
             process.wait()
             eval_time = time.time() - start_time
 
-            json_path = self.eval_results_dir / f"{model_name}.{run_id}.json"
+            json_path = eval_out_dir / f"{model_name}.{run_id}.json"
             resolved = total = None
             if json_path.exists():
                 try:
                     with open(json_path) as f:
                         data = json.load(f)
                     resolved = data.get("resolved_instances")
-                    total = data.get("total_instances") or len(predictions)
+                    total = (
+                        data.get("submitted_instances")
+                        or data.get("completed_instances")
+                        or len(predictions)
+                    )
                 except (OSError, json.JSONDecodeError) as exc:
                     logging.warning(f"Failed to parse evaluation JSON: {exc}")
 

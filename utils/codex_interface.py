@@ -2,6 +2,8 @@ import os
 import subprocess
 from typing import Dict, List
 
+DEFAULT_INSTANCE_TIMEOUT = int(os.environ.get("CODE_SWE_INSTANCE_TIMEOUT", "7200"))
+
 class CodexCodeInterface:
     """Interface for interacting with the Codex CLI."""
 
@@ -23,15 +25,23 @@ class CodexCodeInterface:
         try:
             original_cwd = os.getcwd()
             os.chdir(cwd)
-            cmd = ["codex"]
+            cmd = [
+                "codex",
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
             if model:
                 cmd.extend(["--model", model])
+            env = os.environ.copy()
+            env.setdefault("TERM", "xterm-256color")
             result = subprocess.run(
                 cmd,
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=600,
+                timeout=DEFAULT_INSTANCE_TIMEOUT,
+                env=env,
             )
             os.chdir(original_cwd)
             return {
@@ -45,7 +55,7 @@ class CodexCodeInterface:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": "Command timed out after 10 minutes",
+                "stderr": f"Command timed out after {DEFAULT_INSTANCE_TIMEOUT // 60} minutes",
                 "returncode": -1,
             }
         except Exception as e:

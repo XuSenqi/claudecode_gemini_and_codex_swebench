@@ -20,15 +20,23 @@ class EnhancedBenchmarkRunner:
         self.base_dir = Path.cwd()
         self.log_file = self.base_dir / "benchmark_scores.log"
         self.predictions_dir = self.base_dir / "predictions"
-        self.results_dir = self.base_dir / "results"
-        self.eval_results_dir = self.base_dir / "evaluation_results"
         self.model = model
         self.backend = backend
         
         # Create directories
         self.predictions_dir.mkdir(exist_ok=True)
-        self.results_dir.mkdir(exist_ok=True)
-        self.eval_results_dir.mkdir(exist_ok=True)
+
+    def eval_output_dir_for(self, prediction_file) -> Path:
+        """Evaluation artifacts directory for a prediction file.
+
+        Eval artifacts are always colocated with the prediction file: for
+        runs/<dir>/predictions.jsonl they land in runs/<dir>/evaluation/.
+        """
+        pred_path = Path(prediction_file).resolve()
+        target = pred_path.parent / "evaluation"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
         
     def log_result(self, dataset_name, num_instances, generation_score, 
                    evaluation_score, generation_time, evaluation_time, 
@@ -63,10 +71,11 @@ class EnhancedBenchmarkRunner:
             print(f"   Generation Score: {generation_score:.2f}% (patches created)")
             print(f"   Evaluation: {evaluation_status}")
             
-    def run_inference(self, dataset_name, limit):
+    def run_inference(self, dataset_name, limit, workers=1, output_dir=None):
         """Run code model on the dataset"""
         model_info = f" with model {self.model}" if self.model else ""
-        print(f"\n🚀 Running {self.backend.title()} Code{model_info} on {dataset_name} (limit: {limit})...")
+        worker_info = f", workers: {workers}" if workers > 1 else ""
+        print(f"\n🚀 Running {self.backend.title()} Code{model_info} on {dataset_name} (limit: {limit}{worker_info})...")
 
         cmd = [
             sys.executable,
@@ -74,21 +83,37 @@ class EnhancedBenchmarkRunner:
             "--dataset_name", dataset_name,
             "--limit", str(limit),
             "--backend", self.backend,
+            "--workers", str(workers),
         ]
 
         if self.model:
             cmd.extend(["--model", self.model])
+        if output_dir:
+            cmd.extend(["--output-dir", str(output_dir)])
+
+        instance_timeout = int(os.environ.get("CODE_SWE_INSTANCE_TIMEOUT", "7200"))
+        batches = (limit + workers - 1) // workers if workers > 0 else limit
+        default_total = instance_timeout * batches + 300
+        subprocess_timeout = int(os.environ.get("CODE_SWE_TOTAL_TIMEOUT", str(default_total)))
         
         try:
             start_time = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)  # 2 hour timeout
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=subprocess_timeout)
             execution_time = time.time() - start_time
             
             if result.returncode != 0:
                 print(f"⚠️ Warning: Inference had issues but continuing...")
                 if result.stderr:
                     print(f"Stderr: {result.stderr[:500]}")
+                if result.stdout:
+                    print(f"Stdout: {result.stdout[:500]}")
             
+            if output_dir:
+                pred_path = Path(output_dir) / "predictions.jsonl"
+                if pred_path.exists():
+                    print(f"✅ Predictions saved to: {pred_path}")
+                    return str(pred_path), execution_time
+
             # Find the latest prediction file
             pred_files = sorted(self.predictions_dir.glob("predictions_*.jsonl"), reverse=True)
             
@@ -101,8 +126,8 @@ class EnhancedBenchmarkRunner:
             return str(latest_pred), execution_time
             
         except subprocess.TimeoutExpired:
-            print("❌ Inference timed out after 2 hours")
-            return None, 7200
+            print(f"❌ Inference timed out after {subprocess_timeout} seconds")
+            return None, subprocess_timeout
         except Exception as e:
             print(f"❌ Error during inference: {e}")
             return None, 0
@@ -130,6 +155,7 @@ class EnhancedBenchmarkRunner:
         
     def run_evaluation(self, prediction_file, dataset_name, max_workers=2):
         """Run real SWE-bench evaluation using Docker"""
+        prediction_file = str(Path(prediction_file).resolve())
         print(f"\n🔬 Running real evaluation on {prediction_file}...")
         print("This will test if patches actually fix the issues (takes time)...")
         
@@ -154,6 +180,7 @@ class EnhancedBenchmarkRunner:
         # Run evaluation
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"{self.backend}_code_{timestamp}"
+        eval_out_dir = self.eval_output_dir_for(prediction_file)
         
         cmd = [
             sys.executable, "-m", "swebench.harness.run_evaluation",
@@ -163,8 +190,7 @@ class EnhancedBenchmarkRunner:
             "--run_id", run_id,
             "--max_workers", str(max_workers),
             "--timeout", "600",  # 10 minutes per instance
-            "--cache_level", "env",
-            "--report_dir", str(self.eval_results_dir),
+            "--report_dir", str(eval_out_dir),
         ]
         
         print(f"Running: {' '.join(cmd)}")
@@ -177,7 +203,7 @@ class EnhancedBenchmarkRunner:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=str(self.eval_results_dir),
+                cwd=str(eval_out_dir),
             )
             
             # Print output in real-time
@@ -189,14 +215,18 @@ class EnhancedBenchmarkRunner:
             process.wait()
             eval_time = time.time() - start_time
 
-            json_path = self.eval_results_dir / f"{model_name}.{run_id}.json"
+            json_path = eval_out_dir / f"{model_name}.{run_id}.json"
             resolved = total = None
             if json_path.exists():
                 try:
                     with open(json_path) as f:
                         data = json.load(f)
                     resolved = data.get("resolved_instances")
-                    total = data.get("total_instances") or len(predictions)
+                    total = (
+                        data.get("submitted_instances")
+                        or data.get("completed_instances")
+                        or len(predictions)
+                    )
                 except (OSError, json.JSONDecodeError) as exc:
                     logging.warning(f"Failed to parse evaluation JSON: {exc}")
 
