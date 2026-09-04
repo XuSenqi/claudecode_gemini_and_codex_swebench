@@ -1,10 +1,17 @@
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 DEFAULT_INSTANCE_TIMEOUT = int(os.environ.get("CODE_SWE_INSTANCE_TIMEOUT", "7200"))
+
+# How long a model stream may sit with no tokens before Codex aborts that
+# HTTP request and retries it. 0 leaves Codex's own default (typically 5 min).
+IDLE_TIMEOUT_MS = int(os.environ.get("CODE_SWE_CODEX_IDLE_TIMEOUT_MS", "120000") or "0")
+REQUEST_RETRIES = int(os.environ.get("CODE_SWE_CODEX_REQUEST_RETRIES", "10") or "0")
+STREAM_RETRIES = int(os.environ.get("CODE_SWE_CODEX_STREAM_RETRIES", "10") or "0")
 
 # Optional per-instance guards enforced via a Codex PreToolUse hook
 # (utils/step_limit_hook.py):
@@ -14,6 +21,46 @@ DEFAULT_INSTANCE_TIMEOUT = int(os.environ.get("CODE_SWE_INSTANCE_TIMEOUT", "7200
 MAX_STEPS = int(os.environ.get("CODE_SWE_MAX_STEPS", "0") or "0")
 MAX_REPEATS = int(os.environ.get("CODE_SWE_MAX_REPEATS", "0") or "0")
 _STEP_LIMIT_HOOK = Path(__file__).resolve().parent / "step_limit_hook.py"
+
+_PROVIDER_RE = re.compile(r'(?m)^model_provider\s*=\s*"([^"]+)"')
+
+
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+
+
+def _active_model_provider(config_text: Optional[str] = None) -> str:
+    """Name of the configured model_provider, or Codex's built-in ``openai``."""
+    if config_text is None:
+        config_path = _codex_home() / "config.toml"
+        try:
+            config_text = config_path.read_text(encoding="utf-8")
+        except OSError:
+            return "openai"
+    match = _PROVIDER_RE.search(config_text)
+    return match.group(1) if match else "openai"
+
+
+def _retry_config_args(provider: Optional[str] = None) -> List[str]:
+    """``-c`` overrides so a hung model stream is aborted and retried.
+
+    Codex already retries sampling requests on stream disconnect
+    (``stream_idle_timeout_ms`` / ``stream_max_retries`` / ``request_max_retries``
+    on ``ModelProviderInfo``). Without these, a silent gateway holds the
+    instance until ``CODE_SWE_INSTANCE_TIMEOUT``.
+    """
+    if IDLE_TIMEOUT_MS <= 0 and REQUEST_RETRIES <= 0 and STREAM_RETRIES <= 0:
+        return []
+    name = provider if provider is not None else _active_model_provider()
+    args: List[str] = []
+    prefix = f"model_providers.{name}"
+    if IDLE_TIMEOUT_MS > 0:
+        args.extend(["-c", f"{prefix}.stream_idle_timeout_ms={IDLE_TIMEOUT_MS}"])
+    if REQUEST_RETRIES > 0:
+        args.extend(["-c", f"{prefix}.request_max_retries={REQUEST_RETRIES}"])
+    if STREAM_RETRIES > 0:
+        args.extend(["-c", f"{prefix}.stream_max_retries={STREAM_RETRIES}"])
+    return args
 
 
 def _step_limit_config_args() -> List[str]:
@@ -69,6 +116,7 @@ class CodexCodeInterface:
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox",
             ]
+            cmd.extend(_retry_config_args())
             cmd.extend(_step_limit_config_args())
             if model:
                 cmd.extend(["--model", model])

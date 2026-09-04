@@ -369,6 +369,14 @@ All are read at launch time; no code changes needed.
 - **`CODE_SWE_INSTANCE_TIMEOUT`** (default `7200`): wall-clock cap per
   `codex exec` run, in seconds. A runaway instance is killed and recorded
   as a timeout failure.
+- **`CODE_SWE_CODEX_IDLE_TIMEOUT_MS`** (default `120000`): if the model
+  stream produces no tokens for this long, Codex aborts that HTTP request
+  and retries it (instead of sitting idle until the instance timeout).
+  Set to `0` to keep Codex's own default (~5 minutes).
+- **`CODE_SWE_CODEX_REQUEST_RETRIES`** / **`CODE_SWE_CODEX_STREAM_RETRIES`**
+  (defaults `10` / `10`): how many times Codex retries a failed or stalled
+  model request / SSE stream. Set either to `0` together with idle timeout
+  `0` to disable the overrides.
 - **`CODE_SWE_MAX_STEPS`** (default `0` = unlimited): per-instance tool-call
   limit enforced via a Codex `PreToolUse` hook
   (`utils/step_limit_hook.py`). Once the limit is hit, further tool calls are
