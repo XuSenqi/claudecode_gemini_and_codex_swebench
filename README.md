@@ -362,6 +362,25 @@ python swe_bench.py run --quick --max-workers 1
 - **benchmark_scores.log**: Main results log (JSON lines)
 - **runs/**: Per-run output — predictions, per-instance session/stream, and `evaluation/` (reports + harness logs)
 
+### Optional Tuning (Codex backend)
+
+All are read at launch time; no code changes needed.
+
+- **`CODE_SWE_INSTANCE_TIMEOUT`** (default `7200`): wall-clock cap per
+  `codex exec` run, in seconds. A runaway instance is killed and recorded
+  as a timeout failure.
+- **`CODE_SWE_MAX_STEPS`** (default `0` = unlimited): per-instance tool-call
+  limit enforced via a Codex `PreToolUse` hook
+  (`utils/step_limit_hook.py`). Once the limit is hit, further tool calls are
+  denied and the model is told to produce its final answer. Example:
+  `CODE_SWE_MAX_STEPS=100 python swe_bench.py run --backend codex ...`
+- **`CODE_SWE_MAX_REPEATS`** (default `0` = disabled): repetition-loop guard.
+  When the model makes the *identical* tool call (same tool + same
+  arguments) N consecutive times — the signature of a stuck/looping agent —
+  further tool calls are denied and the model must wrap up. Different
+  commands that happen to return identical output do not trigger it.
+  Example: `CODE_SWE_MAX_REPEATS=10 ...`
+
 ## Docker Setup
 
 If you don't have Docker installed, here's how to set it up manually:
