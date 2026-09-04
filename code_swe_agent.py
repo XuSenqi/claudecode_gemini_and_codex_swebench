@@ -10,7 +10,9 @@ import sys
 import subprocess
 import tempfile
 import shutil
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager, nullcontext
 from typing import List, Dict, Optional
 from pathlib import Path
 
@@ -21,12 +23,51 @@ import jsonlines
 from utils.claude_interface import ClaudeCodeInterface
 from utils.codex_interface import CodexCodeInterface
 from utils.gemini_interface import GeminiCodeInterface
+from utils.model_registry import get_model_name
+from utils.progress_display import ProgressReporter, ProgressViewer
 from utils.prompt_formatter import PromptFormatter
 from utils.patch_extractor import PatchExtractor
 from utils.run_artifacts import run_timestamp, save_instance_artifacts
+from utils.session_watchers import BackgroundStepWatcher
 
 
 DEFAULT_BACKEND = os.environ.get("CODE_SWE_BACKEND", "claude")
+
+
+def _classify_exit_status(prediction: Dict, cli_result: Optional[Dict] = None) -> str:
+    """Map a prediction/CLI outcome onto mini-swe-agent-style exit statuses."""
+    stderr = ((cli_result or {}).get("stderr") or "")
+    error = prediction.get("error") or ""
+    combined = f"{error}\n{stderr}".lower()
+    if "timed out" in combined:
+        return "TimeLimitExceeded"
+    if "repeated identical" in combined or "repeated action" in combined:
+        return "RepeatedAction"
+    if error:
+        if "failed to set up" in error.lower():
+            return "SetupFailed"
+        return "ExecutionFailed"
+    if (prediction.get("prediction") or "").strip():
+        return "Submitted"
+    return "NoPatch"
+
+
+@contextmanager
+def _redirect_instance_log(log_path: Optional[Path]):
+    """Send this instance's prints to ``run.log`` so they don't fight the Live UI."""
+    if log_path is None:
+        yield
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "a", encoding="utf-8")
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout = log_file
+        sys.stderr = log_file
+        yield
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        log_file.close()
 
 
 def _process_instance_worker(
@@ -36,16 +77,17 @@ def _process_instance_worker(
     backend: str,
     base_dir: str,
     output_dir: Optional[str],
+    events_path: Optional[str] = None,
 ) -> Dict:
     """Run one instance in a worker process (each gets its own CLI session)."""
-    instance_id = instance["instance_id"]
-    print(f"[pid {os.getpid()}] starting {instance_id}", flush=True)
     os.chdir(base_dir)
+    reporter = ProgressReporter(events_path) if events_path else None
     agent = CodeSWEAgent(
         prompt_template,
         model,
         backend,
         output_dir=Path(output_dir) if output_dir else None,
+        progress_reporter=reporter,
     )
     return agent.process_instance(instance)
 
@@ -56,8 +98,10 @@ class CodeSWEAgent:
     def __init__(self, prompt_template: Optional[str] = None,
                  model: Optional[str] = None,
                  backend: str = DEFAULT_BACKEND,
-                 output_dir: Optional[Path] = None):
+                 output_dir: Optional[Path] = None,
+                 progress_reporter: Optional[ProgressReporter] = None):
         self.backend = (backend or DEFAULT_BACKEND).lower()
+        self.progress_reporter = progress_reporter
         if self.backend == "codex":
             self.interface = CodexCodeInterface()
         elif self.backend == "gemini":
@@ -145,24 +189,42 @@ class CodeSWEAgent:
     def process_instance(self, instance: Dict) -> Dict:
         """Process a single SWE-bench instance."""
         instance_id = instance["instance_id"]
+        log_path = (self.output_dir / instance_id / "run.log") if self.output_dir else None
+        with _redirect_instance_log(log_path):
+            return self._process_instance_body(instance)
+
+    def _process_instance_body(self, instance: Dict) -> Dict:
+        instance_id = instance["instance_id"]
+        reporter = self.progress_reporter
+        if reporter is not None:
+            reporter.instance_start(instance_id)
+            reporter.instance_status(instance_id, "Task initialized")
+
         print(f"\nProcessing {instance_id}")
-
         original_dir = os.getcwd()
-
-        repo_path = self.setup_repository(instance)
-        if not repo_path:
-            prediction = {
-                "instance_id": instance_id,
-                "model": f"{self.backend}-code",
-                "prediction": "",
-                "error": "Failed to set up repository",
-            }
-            self._save_instance_artifacts(instance_id, {}, "", repo_path or "")
-            return prediction
-
+        prediction: Dict = {
+            "instance_id": instance_id,
+            "model": self.model_alias or f"{self.backend}-code",
+            "prediction": "",
+        }
         cli_result: Dict = {}
         patch = ""
+        repo_path = None
+        exit_status_override: Optional[str] = None
         try:
+            if reporter is not None:
+                reporter.instance_status(instance_id, "Setting up repository")
+            repo_path = self.setup_repository(instance)
+            if not repo_path:
+                prediction = {
+                    "instance_id": instance_id,
+                    "model": f"{self.backend}-code",
+                    "prediction": "",
+                    "error": "Failed to set up repository",
+                }
+                self._save_instance_artifacts(instance_id, {}, "", repo_path or "")
+                return prediction
+
             prompt = self.prompt_formatter.format_for_cli(instance)
 
             os.chdir(repo_path)
@@ -171,7 +233,15 @@ class CodeSWEAgent:
 
             model_info = f" with model {self.model_alias}" if self.model else ""
             print(f"Running {self.backend.title()} Code{model_info}...")
-            cli_result = self.interface.execute_code_cli(prompt, repo_path, self.model)
+            if reporter is not None:
+                reporter.instance_status(instance_id, f"Running {self.backend}")
+            watcher_cm = (
+                BackgroundStepWatcher(self.backend, instance_id, reporter, cwd=repo_path)
+                if reporter is not None
+                else nullcontext()
+            )
+            with watcher_cm:
+                cli_result = self.interface.execute_code_cli(prompt, repo_path, self.model)
 
             if not cli_result["success"]:
                 print(f"{self.backend.title()} Code execution failed: {cli_result['stderr']}")
@@ -207,7 +277,8 @@ class CodeSWEAgent:
                 "prediction": "",
                 "error": str(e),
             }
-            self._save_instance_artifacts(instance_id, cli_result, patch, repo_path)
+            exit_status_override = f"Uncaught {type(e).__name__}"
+            self._save_instance_artifacts(instance_id, cli_result, patch, repo_path or "")
             return prediction
         finally:
             try:
@@ -217,6 +288,11 @@ class CodeSWEAgent:
 
             if repo_path and os.path.exists(repo_path):
                 shutil.rmtree(repo_path)
+            if reporter is not None:
+                reporter.instance_end(
+                    instance_id,
+                    exit_status_override or _classify_exit_status(prediction, cli_result),
+                )
 
     def _save_instance_artifacts(
         self,
@@ -262,14 +338,41 @@ class CodeSWEAgent:
         predictions: List[Dict] = []
         base_dir = str(self.base_dir.resolve())
         output_dir = str(self.output_dir) if self.output_dir else None
+        events_path = str(self.output_dir / "progress.jsonl") if self.output_dir else None
+        yaml_report_path = (
+            self.output_dir / f"exit_statuses_{time.time()}.yaml" if self.output_dir else None
+        )
+        reporter = ProgressReporter(events_path) if events_path else None
+        self.progress_reporter = reporter
+        if reporter is not None:
+            reporter.clear()
+        viewer_cm = (
+            ProgressViewer(events_path, num_instances=len(instances), yaml_report_path=yaml_report_path)
+            if events_path
+            else nullcontext()
+        )
 
         if workers == 1:
-            for instance in tqdm(instances, desc="Processing instances"):
-                prediction = self.process_instance(instance)
-                predictions.append(prediction)
-                self._save_predictions(prediction)
+            with viewer_cm:
+                if reporter is not None:
+                    reporter.init_run(len(instances), self.backend, self.model, workers=workers)
+                instance_iter = (
+                    instances
+                    if events_path
+                    else tqdm(instances, desc="Processing instances")
+                )
+                for instance in instance_iter:
+                    prediction = self.process_instance(instance)
+                    predictions.append(prediction)
+                    self._save_predictions(prediction)
         else:
-            print(f"Running {len(instances)} instances with {workers} parallel workers...")
+            if not events_path:
+                print(f"Running {len(instances)} instances with {workers} parallel workers...")
+            # Emit init and fork workers before starting the viewer thread so
+            # ProcessPoolExecutor does not fork a process that already has a
+            # Live/tail thread running.
+            if reporter is not None:
+                reporter.init_run(len(instances), self.backend, self.model, workers=workers)
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 futures = {
                     executor.submit(
@@ -280,23 +383,34 @@ class CodeSWEAgent:
                         self.backend,
                         base_dir,
                         output_dir,
+                        events_path,
                     ): instance["instance_id"]
                     for instance in instances
                 }
-                for future in tqdm(as_completed(futures), total=len(futures),
-                                   desc="Processing instances"):
-                    instance_id = futures[future]
-                    try:
-                        prediction = future.result()
-                    except Exception as exc:
-                        prediction = {
-                            "instance_id": instance_id,
-                            "model": self.model_alias or f"{self.backend}-code",
-                            "prediction": "",
-                            "error": str(exc),
-                        }
-                    predictions.append(prediction)
-                    self._save_predictions(prediction)
+                with viewer_cm:
+                    completed = (
+                        as_completed(futures)
+                        if events_path
+                        else tqdm(as_completed(futures), total=len(futures),
+                                  desc="Processing instances")
+                    )
+                    for future in completed:
+                        instance_id = futures[future]
+                        try:
+                            prediction = future.result()
+                        except Exception as exc:
+                            prediction = {
+                                "instance_id": instance_id,
+                                "model": self.model_alias or f"{self.backend}-code",
+                                "prediction": "",
+                                "error": str(exc),
+                            }
+                            if reporter is not None:
+                                reporter.instance_end(
+                                    instance_id, f"Uncaught {type(exc).__name__}"
+                                )
+                        predictions.append(prediction)
+                        self._save_predictions(prediction)
 
         with open(json_file, 'w') as f:
             json.dump(predictions, f, indent=2)
