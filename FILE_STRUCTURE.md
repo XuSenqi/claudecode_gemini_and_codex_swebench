@@ -78,6 +78,6 @@ If starting fresh, you only need:
 2. The `utils/` directory  
 3. The `prompts/` directory
 4. `README.md` and `requirements.txt`
-5. Install SWE-bench: `pip install swebench`
+5. Install deps in a dedicated venv: `python -m pip install -r requirements.txt` (pins `swebench>=5.0.2,<6`)
 
 Everything else (runs/) will be created as you run tests.

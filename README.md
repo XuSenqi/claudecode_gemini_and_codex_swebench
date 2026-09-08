@@ -13,11 +13,14 @@ Each instance still gets its own checkout at that issue's `base_commit`. GitHub 
 ## Getting Started in 5 Minutes
 
 ```bash
-# Assuming you have Python, a code model CLI (Claude or Codex), and Docker installed:
+# Assuming you have Python 3.10+, a code model CLI (Claude or Codex), and Docker installed:
 # Replace `python` with `python3` on Linux/macOS or `py` on Windows if needed.
 git clone https://github.com/jimmc414/claudecode_n_codex_swebench.git
 cd claudecode_n_codex_swebench
-python -m pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt   # pins swebench 5.x
 python swe_bench.py run --limit 1  # Run your first test (~10 min)
 python swe_bench.py check           # See your results
 ```
@@ -44,7 +47,7 @@ python swe_bench.py quick
 
 Before starting, ensure you have:
 
-1. **Python 3.8 or newer**
+1. **Python 3.10 or newer** (required by `swebench` 5.x)
    ```bash
    python --version  # or python3/py --version
    ```
@@ -83,8 +86,11 @@ Before starting, ensure you have:
 git clone <repository-url>
 cd claudecode_n_codex_swebench
 
-# 2. Install all Python dependencies (includes swebench)
-python -m pip install -r requirements.txt  # Use python3/py as needed
+# 2. Use a dedicated venv (do not install into an env that already has swebench 4.x)
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt  # Use python3/py as needed; pins swebench>=5.0.2,<6
 
 # 3. Verify everything is working
 python swe_bench.py list-models               # Claude models
@@ -104,7 +110,7 @@ If you get errors:
 - **"Codex CLI not found"**: Ensure `codex` is installed and in your PATH
 - **"Gemini CLI not found"**: Ensure `gemini` is installed and in your PATH
 - **"Docker daemon not running"**: Start Docker Desktop or `sudo systemctl start docker`
-- **"swebench not found"**: Run `pip install swebench`
+- **"swebench not found" / incompatible swebench**: Use a fresh `.venv` and `python -m pip install -r requirements.txt`. Do not `pip install swebench` unpinned (that can pull 4.x or an untested 6.x). This repo's eval harness matches **swebench 5.x** (`>=5.0.2,<6`).
 - **Out of memory**: Increase Docker memory in Docker Desktop settings
 - **Permission denied (Docker)**: Add yourself to docker group: `sudo usermod -aG docker $USER` then logout/login
 

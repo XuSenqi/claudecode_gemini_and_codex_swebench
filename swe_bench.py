@@ -8,6 +8,7 @@ import argparse
 import sys
 import os
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 
 import jsonlines
@@ -15,22 +16,64 @@ import jsonlines
 # Import the existing functionality
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Check for swebench installation when needed for evaluation
+# Must match requirements.txt. 5.x removed --cache_level from run_evaluation.
+SWEBENCH_MIN = (5, 0, 2)
+SWEBENCH_MAX_EXCLUSIVE = (6, 0, 0)
+SWEBENCH_REQUIREMENT = "swebench>=5.0.2,<6"
+
+
+def parse_pep440_release(version: str) -> tuple[int, int, int]:
+    """Best-effort (major, minor, patch) from a PEP 440 version string."""
+    release = version.split("+", 1)[0].split("!", 1)[-1]
+    for sep in ("a", "b", "rc", "dev"):
+        if sep in release:
+            release = release.split(sep, 1)[0]
+            break
+    parts = []
+    for token in release.split("."):
+        digits = ""
+        for char in token:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+        if len(parts) == 3:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def swebench_version_supported(version: str) -> bool:
+    parsed = parse_pep440_release(version)
+    return SWEBENCH_MIN <= parsed < SWEBENCH_MAX_EXCLUSIVE
+
+
 def check_swebench_installed():
-    """Check if swebench is installed, provide helpful message if not."""
+    """Check that a compatible swebench is installed for evaluation."""
     try:
-        import swebench
-        return True
+        import swebench  # noqa: F401
+        version = metadata.version("swebench")
     except ImportError:
         print("\n⚠️  SWE-bench module not found!")
-        print("To install SWE-bench for evaluation, run:")
-        print("  pip install swebench")
-        print("Or install from source:")
-        print("  git clone https://github.com/princeton-nlp/SWE-bench.git")
-        print("  cd SWE-bench && pip install -e .")
+        print("Create a dedicated venv (do not reuse an old global env) and run:")
+        print(f"  python -m pip install -r requirements.txt   # pins {SWEBENCH_REQUIREMENT}")
         print("\nNote: You can still generate patches without swebench,")
         print("but evaluation requires it to test if patches actually work.")
         return False
+    except metadata.PackageNotFoundError:
+        version = getattr(sys.modules.get("swebench"), "__version__", "unknown")
+
+    if not swebench_version_supported(version):
+        print(f"\n⚠️  Incompatible swebench {version} (need {SWEBENCH_REQUIREMENT}).")
+        print("This repo's eval CLI matches swebench 5.x (no --cache_level).")
+        print("4.x will not match; 6.x is untested. Fix with a fresh venv:")
+        print("  python -m venv .venv && source .venv/bin/activate")
+        print("  python -m pip install -r requirements.txt")
+        print("\nNote: You can still generate patches; evaluation needs 5.x.")
+        return False
+    return True
 
 from run_benchmark_with_eval import EnhancedBenchmarkRunner
 from evaluate_predictions import PredictionEvaluator
