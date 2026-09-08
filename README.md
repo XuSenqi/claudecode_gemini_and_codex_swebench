@@ -8,6 +8,8 @@ The SWE-bench benchmark presents the model with actual GitHub issues from popula
 
 > **Platform support:** The tools in this repository run on Linux, macOS, and Windows (including WSL). Replace `python` with `python3` on Unix-like systems or `py` on Windows if needed.
 
+Each instance still gets its own checkout at that issue's `base_commit`. GitHub clones are cached under `~/.cache/swe_git_mirrors/<org>/<repo>.git` (override with `SWE_GIT_MIRROR_ROOT`). Mirrors are fetched at most once per 24h (`SWE_GIT_MIRROR_FETCH_TTL_S`). Set `SWE_GIT_MIRROR=0` to clone from GitHub every time.
+
 ## Getting Started in 5 Minutes
 
 ```bash
@@ -361,6 +363,33 @@ python swe_bench.py run --quick --max-workers 1
 
 - **benchmark_scores.log**: Main results log (JSON lines)
 - **runs/**: Per-run output — predictions, per-instance session/stream, and `evaluation/` (reports + harness logs)
+
+### Optional Tuning (Codex backend)
+
+All are read at launch time; no code changes needed.
+
+- **`CODE_SWE_INSTANCE_TIMEOUT`** (default `7200`): wall-clock cap per
+  `codex exec` run, in seconds. A runaway instance is killed and recorded
+  as a timeout failure.
+- **`CODE_SWE_CODEX_IDLE_TIMEOUT_MS`** (default `120000`): if the model
+  stream produces no tokens for this long, Codex aborts that HTTP request
+  and retries it (instead of sitting idle until the instance timeout).
+  Set to `0` to keep Codex's own default (~5 minutes).
+- **`CODE_SWE_CODEX_REQUEST_RETRIES`** / **`CODE_SWE_CODEX_STREAM_RETRIES`**
+  (defaults `10` / `10`): how many times Codex retries a failed or stalled
+  model request / SSE stream. Set either to `0` together with idle timeout
+  `0` to disable the overrides.
+- **`CODE_SWE_MAX_STEPS`** (default `0` = unlimited): per-instance tool-call
+  limit enforced via a Codex `PreToolUse` hook
+  (`utils/step_limit_hook.py`). Once the limit is hit, further tool calls are
+  denied and the model is told to produce its final answer. Example:
+  `CODE_SWE_MAX_STEPS=100 python swe_bench.py run --backend codex ...`
+- **`CODE_SWE_MAX_REPEATS`** (default `0` = disabled): repetition-loop guard.
+  When the model makes the *identical* tool call (same tool + same
+  arguments) N consecutive times — the signature of a stuck/looping agent —
+  further tool calls are denied and the model must wrap up. Different
+  commands that happen to return identical output do not trigger it.
+  Example: `CODE_SWE_MAX_REPEATS=10 ...`
 
 ## Docker Setup
 

@@ -98,15 +98,13 @@ class EnhancedBenchmarkRunner:
         
         try:
             start_time = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=subprocess_timeout)
+            # Inherit stdout/stderr so the Live progress UI (or snapshot
+            # lines when piped) is visible to whoever launched swe_bench.py.
+            result = subprocess.run(cmd, timeout=subprocess_timeout)
             execution_time = time.time() - start_time
             
             if result.returncode != 0:
                 print(f"⚠️ Warning: Inference had issues but continuing...")
-                if result.stderr:
-                    print(f"Stderr: {result.stderr[:500]}")
-                if result.stdout:
-                    print(f"Stdout: {result.stdout[:500]}")
             
             if output_dir:
                 pred_path = Path(output_dir) / "predictions.jsonl"
