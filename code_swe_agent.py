@@ -27,6 +27,7 @@ from utils.model_registry import get_model_name
 from utils.progress_display import ProgressReporter, ProgressViewer
 from utils.prompt_formatter import PromptFormatter
 from utils.patch_extractor import PatchExtractor
+from utils.exit_status import classify_exit_status
 from utils.run_artifacts import run_timestamp, save_instance_artifacts
 from utils.session_watchers import BackgroundStepWatcher
 
@@ -36,20 +37,7 @@ DEFAULT_BACKEND = os.environ.get("CODE_SWE_BACKEND", "claude")
 
 def _classify_exit_status(prediction: Dict, cli_result: Optional[Dict] = None) -> str:
     """Map a prediction/CLI outcome onto mini-swe-agent-style exit statuses."""
-    stderr = ((cli_result or {}).get("stderr") or "")
-    error = prediction.get("error") or ""
-    combined = f"{error}\n{stderr}".lower()
-    if "timed out" in combined:
-        return "TimeLimitExceeded"
-    if "repeated identical" in combined or "repeated action" in combined:
-        return "RepeatedAction"
-    if error:
-        if "failed to set up" in error.lower():
-            return "SetupFailed"
-        return "ExecutionFailed"
-    if (prediction.get("prediction") or "").strip():
-        return "Submitted"
-    return "NoPatch"
+    return classify_exit_status(prediction, cli_result)
 
 
 @contextmanager
@@ -131,55 +119,56 @@ class CodeSWEAgent:
 
     def setup_repository(self, instance: Dict) -> Optional[str]:
         """Set up a repository for testing."""
+        from utils.git_mirror import (
+            checkout_commit,
+            clone_from_mirror,
+            ensure_mirror,
+            fetch_worktree,
+            github_url,
+            mirror_enabled,
+        )
+
         instance_id = instance["instance_id"]
         repo_name = instance["repo"]
         base_commit = instance["base_commit"]
-
-        # Create temporary directory for this instance (cross-platform)
+        clone_url = github_url(repo_name)
         temp_dir = Path(tempfile.gettempdir()) / f"swe_bench_{instance_id}"
+        original_dir = Path.cwd()
 
         try:
-            # Remove if exists
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
 
-            # Save current directory
-            original_dir = Path.cwd()
-            
-            # Clone repository
-            print(f"Cloning {repo_name} to {temp_dir}")
-            clone_url = f"https://github.com/{repo_name}.git"
-            
-            result = subprocess.run(
-                ["git", "clone", clone_url, str(temp_dir)],
-                capture_output=True,
-                text=True,
-                cwd=str(original_dir)  # Ensure we're in a valid directory
-            )
-            
-            if result.returncode != 0:
-                print(f"Failed to clone repository: {result.stderr}")
-                return None
-                
-            # Checkout base commit
-            os.chdir(temp_dir)
-            result = subprocess.run(
-                ["git", "checkout", base_commit],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                print(f"Failed to checkout commit: {result.stderr}")
-                os.chdir(str(original_dir))  # Return to original directory
-                return None
+            if mirror_enabled():
+                print(f"Cloning {repo_name} from local mirror to {temp_dir}")
+                mirror = ensure_mirror(repo_name, clone_url)
+                clone_from_mirror(mirror, temp_dir)
+            else:
+                print(f"Cloning {repo_name} to {temp_dir}")
+                result = subprocess.run(
+                    ["git", "clone", clone_url, str(temp_dir)],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(original_dir),
+                )
+                if result.returncode != 0:
+                    print(f"Failed to clone repository: {result.stderr}")
+                    return None
 
-            os.chdir(str(original_dir))  # Return to original directory
+            try:
+                checkout_commit(temp_dir, base_commit)
+            except RuntimeError:
+                if mirror_enabled():
+                    print(f"Commit {base_commit} missing locally; refreshing mirror")
+                    ensure_mirror(repo_name, clone_url, force_fetch=True)
+                    fetch_worktree(temp_dir)
+                    checkout_commit(temp_dir, base_commit)
+                else:
+                    raise
             return str(temp_dir)
-            
+
         except Exception as e:
             print(f"Error setting up repository: {e}")
-            # Try to return to original directory if possible
             try:
                 os.chdir(str(original_dir))
             except Exception as chdir_error:

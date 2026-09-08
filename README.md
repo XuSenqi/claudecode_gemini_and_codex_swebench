@@ -8,6 +8,8 @@ The SWE-bench benchmark presents the model with actual GitHub issues from popula
 
 > **Platform support:** The tools in this repository run on Linux, macOS, and Windows (including WSL). Replace `python` with `python3` on Unix-like systems or `py` on Windows if needed.
 
+Each instance still gets its own checkout at that issue's `base_commit`. GitHub clones are cached under `~/.cache/swe_git_mirrors/<org>/<repo>.git` (override with `SWE_GIT_MIRROR_ROOT`). Mirrors are fetched at most once per 24h (`SWE_GIT_MIRROR_FETCH_TTL_S`). Set `SWE_GIT_MIRROR=0` to clone from GitHub every time.
+
 ## Getting Started in 5 Minutes
 
 ```bash
