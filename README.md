@@ -375,8 +375,9 @@ python swe_bench.py run --quick --max-workers 1
 All are read at launch time; no code changes needed.
 
 - **`CODE_SWE_INSTANCE_TIMEOUT`** (default `7200`): wall-clock cap per
-  `codex exec` run, in seconds. A runaway instance is killed and recorded
-  as a timeout failure.
+  instance CLI run (`codex exec` or `claude`), in seconds. A runaway
+  instance is killed and recorded as a timeout failure. Applies to both
+  `--backend codex` and `--backend claude`.
 - **`CODE_SWE_CODEX_IDLE_TIMEOUT_MS`** (default `120000`): if the model
   stream produces no tokens for this long, Codex aborts that HTTP request
   and retries it (instead of sitting idle until the instance timeout).

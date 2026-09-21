@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Wall-clock cap per `claude` run. Same env var as the Codex backend.
+DEFAULT_INSTANCE_TIMEOUT = int(os.environ.get("CODE_SWE_INSTANCE_TIMEOUT", "7200"))
+
+
 class ClaudeCodeInterface:
     """Interface for interacting with Claude Code CLI."""
 
@@ -50,7 +54,7 @@ class ClaudeCodeInterface:
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=600,  # 10 minute timeout
+                timeout=DEFAULT_INSTANCE_TIMEOUT,
             )
 
             # Restore original directory
@@ -68,7 +72,7 @@ class ClaudeCodeInterface:
             return {
                 "success": False,
                 "stdout": "",
-                "stderr": "Command timed out after 10 minutes",
+                "stderr": f"Command timed out after {DEFAULT_INSTANCE_TIMEOUT // 60} minutes",
                 "returncode": -1,
             }
         except Exception as e:

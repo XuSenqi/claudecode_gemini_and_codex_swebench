@@ -11,6 +11,7 @@ logs/
 
 # Env
 .env
+.venv/
 
 # Editors
 .project
